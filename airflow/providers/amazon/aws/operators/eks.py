@@ -230,6 +230,8 @@ class EKSCreateNodegroupOperator(BaseOperator):
     :param nodegroup_role_arn:
          The Amazon Resource Name (ARN) of the IAM role to associate with the managed nodegroup. (templated)
     :type nodegroup_role_arn: str
+    :param create_nodegroup_kwargs: Optional parameters to pass to the Create Nodegroup API (templated)
+    :type: Dict
     :param aws_conn_id: The Airflow connection used for AWS credentials. (templated)
          If this is None or empty then the default boto3 behaviour is used. If
          running Airflow in a distributed manner and aws_conn_id is None or
@@ -247,6 +249,7 @@ class EKSCreateNodegroupOperator(BaseOperator):
         "nodegroup_subnets",
         "nodegroup_role_arn",
         "nodegroup_name",
+        "create_nodegroup_kwargs",
         "aws_conn_id",
         "region",
     )
@@ -257,6 +260,7 @@ class EKSCreateNodegroupOperator(BaseOperator):
         nodegroup_subnets: List[str],
         nodegroup_role_arn: str,
         nodegroup_name: Optional[str] = DEFAULT_NODEGROUP_NAME,
+        create_nodegroup_kwargs: Optional[Dict] = None,
         aws_conn_id: str = DEFAULT_CONN_ID,
         region: Optional[str] = None,
         **kwargs,
@@ -265,6 +269,7 @@ class EKSCreateNodegroupOperator(BaseOperator):
         self.nodegroup_subnets = nodegroup_subnets
         self.nodegroup_role_arn = nodegroup_role_arn
         self.nodegroup_name = nodegroup_name
+        self.create_nodegroup_kwargs = create_nodegroup_kwargs or {}
         self.aws_conn_id = aws_conn_id
         self.region = region
         super().__init__(**kwargs)
@@ -280,6 +285,7 @@ class EKSCreateNodegroupOperator(BaseOperator):
             nodegroupName=self.nodegroup_name,
             subnets=self.nodegroup_subnets,
             nodeRole=self.nodegroup_role_arn,
+            **self.create_nodegroup_kwargs,
         )
 
 

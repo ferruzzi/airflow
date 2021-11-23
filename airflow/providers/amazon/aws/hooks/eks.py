@@ -117,7 +117,12 @@ class EKSHook(AwsBaseHook):
         return response
 
     def create_nodegroup(
-        self, clusterName: str, nodegroupName: str, subnets: List[str], nodeRole: str, **kwargs
+        self,
+        clusterName: str,
+        nodegroupName: str,
+        subnets: List[str],
+        nodeRole: str,
+        **kwargs,
     ) -> Dict:
         """
         Creates an Amazon EKS managed node group for an Amazon EKS Cluster.
@@ -135,13 +140,12 @@ class EKSHook(AwsBaseHook):
         :rtype: Dict
         """
         eks_client = self.conn
+
         # The below tag is mandatory and must have a value of either 'owned' or 'shared'
         # A value of 'owned' denotes that the subnets are exclusive to the nodegroup.
         # The 'shared' value allows more than one resource to use the subnet.
-        tags = {'kubernetes.io/cluster/' + clusterName: 'owned'}
-        if "tags" in kwargs:
-            tags = {**tags, **kwargs["tags"]}
-            kwargs.pop("tags")
+        tags = kwargs.pop("tags", {})
+        tags[f'kubernetes.io/cluster/{clusterName}'] = 'owned'
 
         response = eks_client.create_nodegroup(
             clusterName=clusterName,

@@ -47,6 +47,8 @@ DESCRIBE_NODEGROUP_RESULT = f'{{"nodegroup": "{NODEGROUP_NAME}"}}'
 EMPTY_CLUSTER = '{"cluster": {}}'
 EMPTY_NODEGROUP = '{"nodegroup": {}}'
 NAME_LIST = ["foo", "bar", "baz", "qux"]
+CAPACITY_TYPE = "ON_DEMAND"
+INSTANCE_TYPE = "t3.large"
 
 
 class TestEKSCreateClusterOperator(unittest.TestCase):
@@ -176,15 +178,36 @@ class TestEKSCreateNodegroupOperator(unittest.TestCase):
             nodegroup_role_arn=NODEROLE_ARN[1],
         )
 
-        self.create_nodegroup_operator = EKSCreateNodegroupOperator(
+        self.create_nodegroup_kwargs = {
+            'capacityType': CAPACITY_TYPE,
+            'instanceTypes': INSTANCE_TYPE,
+        }
+
+        self.create_nodegroup_operator_without_kwargs = EKSCreateNodegroupOperator(
             task_id=TASK_ID, **self.create_nodegroup_params
+        )
+
+        self.create_nodegroup_operator_with_kwargs = EKSCreateNodegroupOperator(
+            task_id=TASK_ID,
+            create_nodegroup_kwargs=self.create_nodegroup_kwargs,
+            **self.create_nodegroup_params,
         )
 
     @mock.patch.object(EKSHook, "create_nodegroup")
     def test_execute_when_nodegroup_does_not_already_exist(self, mock_create_nodegroup):
-        self.create_nodegroup_operator.execute({})
+        operator_under_test = [
+            (self.create_nodegroup_operator_without_kwargs, self.create_nodegroup_params),
+            (
+                self.create_nodegroup_operator_with_kwargs,
+                {**self.create_nodegroup_params, **self.create_nodegroup_kwargs},
+            ),
+        ]
 
-        mock_create_nodegroup.assert_called_once_with(**convert_keys(self.create_nodegroup_params))
+        for (operator, parameters) in operator_under_test:
+            with self.subTest():
+                operator.execute({})
+
+                mock_create_nodegroup.assert_called_with(**convert_keys(parameters))
 
 
 class TestEKSDeleteClusterOperator(unittest.TestCase):

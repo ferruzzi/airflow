@@ -108,6 +108,8 @@ class ClusterInputs:
 
 
 class FargateProfileInputs:
+    """All possible inputs for creating an AWS Fargate profile."""
+
     REQUIRED: List[Tuple] = [POD_EXECUTION_ROLE_ARN, SELECTORS]
     OPTIONAL: List[Tuple] = [SUBNETS, TAGS]
 
