@@ -16,10 +16,14 @@
 # specific language governing permissions and limitations
 # under the License.
 import unittest
+from copy import deepcopy
 from unittest import mock
+
+import pytest
 
 from airflow.providers.amazon.aws.hooks.eks import ClusterStates, EKSHook
 from airflow.providers.amazon.aws.operators.eks import (
+    MISSING_REQUIRED_PARAMS,
     EKSCreateClusterOperator,
     EKSCreateFargateProfileOperator,
     EKSCreateNodegroupOperator,
@@ -171,43 +175,134 @@ class TestEKSCreateFargateProfileOperator(unittest.TestCase):
 
 class TestEKSCreateNodegroupOperator(unittest.TestCase):
     def setUp(self) -> None:
-        self.create_nodegroup_params = dict(
-            cluster_name=CLUSTER_NAME,
-            nodegroup_name=NODEGROUP_NAME,
-            nodegroup_subnets=SUBNET_IDS,
-            nodegroup_role_arn=NODEROLE_ARN[1],
-        )
+        self.create_nodegroup_required_params = {
+            'cluster_name': CLUSTER_NAME,
+            'nodegroup_name': NODEGROUP_NAME,
+            'nodegroup_subnets': SUBNET_IDS,
+            'nodegroup_role_arn': NODEROLE_ARN[1],
+        }
 
-        self.create_nodegroup_kwargs = {
+        self.create_nodegroup_some_kwargs = {
             'capacityType': CAPACITY_TYPE,
             'instanceTypes': INSTANCE_TYPE,
         }
 
-        self.create_nodegroup_operator_without_kwargs = EKSCreateNodegroupOperator(
-            task_id=TASK_ID, **self.create_nodegroup_params
-        )
+        self.create_nodegroup_all_as_kwargs = {
+            **self.create_nodegroup_required_params,
+            **self.create_nodegroup_some_kwargs,
+        }
 
-        self.create_nodegroup_operator_with_kwargs = EKSCreateNodegroupOperator(
+    @mock.patch.object(EKSHook, "create_nodegroup")
+    def test_execute_without_kwargs_when_nodegroup_does_not_already_exist(self, mock_create_nodegroup):
+        """
+        Operator call under test:
+
+        EKSCreateNodegroupOperator(
             task_id=TASK_ID,
-            create_nodegroup_kwargs=self.create_nodegroup_kwargs,
-            **self.create_nodegroup_params,
+            cluster_name=CLUSTER_NAME,
+            nodegroup_name=NODEGROUP_NAME,
+            nodegroup_subnets=SUBNET_IDS,
+            nodegroup_role_arn=NODEROLE_ARN
+        )
+        """
+
+        EKSCreateNodegroupOperator(
+            task_id=TASK_ID,
+            **self.create_nodegroup_required_params,
+        ).execute({})
+
+        mock_create_nodegroup.assert_called_with(**convert_keys(self.create_nodegroup_required_params))
+
+    @mock.patch.object(EKSHook, "create_nodegroup")
+    def test_execute_with_some_kwargs_when_nodegroup_does_not_already_exist(self, mock_create_nodegroup):
+        """
+        Operator call under test:
+
+        EKSCreateNodegroupOperator(
+            task_id=TASK_ID,
+            cluster_name=CLUSTER_NAME,
+            nodegroup_name=NODEGROUP_NAME,
+            nodegroup_subnets=SUBNET_IDS,
+            nodegroup_role_arn=NODEROLE_ARN,
+            create_nodegroup_kwargs={
+                'capacityType': CAPACITY_TYPE,
+                'instanceTypes': INSTANCE_TYPE,
+            }
+        )
+        """
+
+        EKSCreateNodegroupOperator(
+            task_id=TASK_ID,
+            **self.create_nodegroup_required_params,
+            create_nodegroup_kwargs=self.create_nodegroup_some_kwargs,
+        ).execute({})
+
+        mock_create_nodegroup.assert_called_with(
+            **convert_keys(self.create_nodegroup_required_params), **self.create_nodegroup_some_kwargs
         )
 
     @mock.patch.object(EKSHook, "create_nodegroup")
-    def test_execute_when_nodegroup_does_not_already_exist(self, mock_create_nodegroup):
-        operator_under_test = [
-            (self.create_nodegroup_operator_without_kwargs, self.create_nodegroup_params),
-            (
-                self.create_nodegroup_operator_with_kwargs,
-                {**self.create_nodegroup_params, **self.create_nodegroup_kwargs},
-            ),
-        ]
+    def test_execute_with_all_kwargs_when_nodegroup_does_not_already_exist(self, mock_create_nodegroup):
+        """
+        Operator call under test:
 
-        for (operator, parameters) in operator_under_test:
-            with self.subTest():
-                operator.execute({})
+        EKSCreateNodegroupOperator(
+             task_id=TASK_ID,
+             create_nodegroup_kwargs={
+                 'cluster_name': CLUSTER_NAME,
+                 'nodegroup_name': NODEGROUP_NAME,
+                 'nodegroup_subnets': SUBNET_IDS,
+                 'nodegroup_role_arn': NODEROLE_ARN,
+                 'capacityType': CAPACITY_TYPE,
+                 'instanceTypes': INSTANCE_TYPE,
+             }
+         )
+        """
 
-                mock_create_nodegroup.assert_called_with(**convert_keys(parameters))
+        EKSCreateNodegroupOperator(
+            task_id=TASK_ID,
+            create_nodegroup_kwargs=self.create_nodegroup_all_as_kwargs,
+        ).execute({})
+
+        mock_create_nodegroup.assert_called_with(
+            **convert_keys(self.create_nodegroup_required_params), **self.create_nodegroup_some_kwargs
+        )
+
+    @mock.patch.object(EKSHook, "create_nodegroup")
+    def test_execute_with_missing_values_throws_exception(self, mock_create_nodegroup):
+        """
+        Operator call under test:
+
+        EKSCreateNodegroupOperator(
+             task_id=TASK_ID,
+             create_nodegroup_kwargs={
+                 'nodegroup_name': NODEGROUP_NAME,
+                 'nodegroup_subnets': SUBNET_IDS,
+                 'nodegroup_role_arn': NODEROLE_ARN,
+                 'capacityType': CAPACITY_TYPE,
+                 'instanceTypes': INSTANCE_TYPE,
+             }
+         )
+        """
+        # Copy the full test parameters and remove one of the required parameters.
+        required_param_to_remove = 'cluster_name'
+        test_parameters = deepcopy(self.create_nodegroup_all_as_kwargs)
+        test_parameters.pop(required_param_to_remove)
+        expected_message = MISSING_REQUIRED_PARAMS.format(
+            operator="EKSCreateNodegroupOperator",
+            # KeyError wraps the missing key in single quotes when printed.
+            missing_requirement=f"'{required_param_to_remove}'",
+            kwarg_name="create_nodegroup_kwargs",
+        )
+
+        with pytest.raises(AttributeError) as raised_exception:
+            EKSCreateNodegroupOperator(
+                task_id=TASK_ID,
+                create_nodegroup_kwargs=test_parameters,
+            ).execute({})
+
+        mock_create_nodegroup.assert_not_called()
+        assert raised_exception.value.args[0] == expected_message
 
 
 class TestEKSDeleteClusterOperator(unittest.TestCase):

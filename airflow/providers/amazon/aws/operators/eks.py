@@ -39,6 +39,10 @@ CAN_NOT_DELETE_MSG = "A cluster can not be deleted with attached {compute}.  Del
 MISSING_ARN_MSG = "Creating an {compute} requires {requirement} to be passed in."
 SUCCESS_MSG = "No {compute} remain, deleting cluster."
 
+MISSING_REQUIRED_PARAMS = (
+    "{operator} requires {missing_requirement} to be provided as a named arg or as part of {kwarg_name}."
+)
+
 SUPPORTED_COMPUTE_VALUES = frozenset({'nodegroup', 'fargate'})
 NODEGROUP_FULL_NAME = 'Amazon EKS managed node groups'
 FARGATE_FULL_NAME = 'AWS Fargate profiles'
@@ -256,20 +260,33 @@ class EKSCreateNodegroupOperator(BaseOperator):
 
     def __init__(
         self,
-        cluster_name: str,
-        nodegroup_subnets: List[str],
-        nodegroup_role_arn: str,
-        nodegroup_name: Optional[str] = DEFAULT_NODEGROUP_NAME,
+        cluster_name: str = None,
+        nodegroup_subnets: List[str] = None,
+        nodegroup_role_arn: str = None,
+        nodegroup_name: str = None,
         create_nodegroup_kwargs: Optional[Dict] = None,
         aws_conn_id: str = DEFAULT_CONN_ID,
         region: Optional[str] = None,
         **kwargs,
     ) -> None:
-        self.cluster_name = cluster_name
-        self.nodegroup_subnets = nodegroup_subnets
-        self.nodegroup_role_arn = nodegroup_role_arn
-        self.nodegroup_name = nodegroup_name
         self.create_nodegroup_kwargs = create_nodegroup_kwargs or {}
+        self.nodegroup_name = nodegroup_name or create_nodegroup_kwargs.pop(
+            "nodegroup_name", DEFAULT_NODEGROUP_NAME
+        )
+        try:
+            self.cluster_name = cluster_name or create_nodegroup_kwargs.pop("cluster_name")
+            self.nodegroup_subnets = nodegroup_subnets or create_nodegroup_kwargs.pop("nodegroup_subnets")
+            self.nodegroup_role_arn = nodegroup_role_arn or create_nodegroup_kwargs.pop("nodegroup_role_arn")
+        except KeyError as missing_param:
+            # KeyError returns the missing key name in single quotes, which is pretty vague.
+            # Wrap it with more context.
+            raise AttributeError(
+                MISSING_REQUIRED_PARAMS.format(
+                    operator="EKSCreateNodegroupOperator",
+                    missing_requirement=missing_param,
+                    kwarg_name="create_nodegroup_kwargs",
+                )
+            )
         self.aws_conn_id = aws_conn_id
         self.region = region
         super().__init__(**kwargs)
