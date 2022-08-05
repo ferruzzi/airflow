@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
+import json
 from datetime import datetime
 
 import boto3
@@ -23,8 +23,13 @@ from airflow import DAG
 from airflow.decorators import task
 from airflow.models.baseoperator import chain
 from airflow.providers.amazon.aws.operators.quicksight import QuickSightCreateIngestionOperator
-from airflow.providers.amazon.aws.operators.s3 import S3CreateBucketOperator, S3CreateObjectOperator
+from airflow.providers.amazon.aws.operators.s3 import (
+    S3CreateBucketOperator,
+    S3CreateObjectOperator,
+    S3DeleteBucketOperator,
+)
 from airflow.providers.amazon.aws.sensors.quicksight import QuickSightSensor
+from airflow.utils.trigger_rule import TriggerRule
 from tests.system.providers.amazon.aws.utils import ENV_ID_KEY, SystemTestContextBuilder
 
 """
@@ -40,11 +45,11 @@ DAG_ID = 'example_quicksight'
 
 sys_test_context_task = SystemTestContextBuilder().build()
 
-SAMPLE_DATA_COLUMNS = {'Project': 'STRING', 'Year': 'INTEGER'}
-SAMPLE_DATA = """'Airflow',2015
-    'OpenOffice',2012
-    'Subversion',2000
-    'NiFi',2006
+SAMPLE_DATA_COLUMNS = ['Project', 'Year']
+SAMPLE_DATA = """'Airflow','2015'
+    'OpenOffice','2012'
+    'Subversion','2000'
+    'NiFi','2006'
 """
 
 
@@ -59,14 +64,28 @@ def await_bucket(bucket: str):
 
 
 @task
-def create_quicksight_dataset(aws_account_id: int, dataset_name: str, bucket: str):
+def create_quicksight_data_source(
+    aws_account_id: str, datasource_name: str, bucket: str, manifest_key: str
+) -> str:
+    response = boto3.client('quicksight').create_data_source(
+        AwsAccountId=aws_account_id,
+        DataSourceId=datasource_name,
+        Name=datasource_name,
+        Type='S3',
+        DataSourceParameters={
+            'S3Parameters': {'ManifestFileLocation': {'Bucket': bucket, 'Key': manifest_key}}
+        },
+    )
+    return response['Arn']
+
+
+@task
+def create_quicksight_dataset(aws_account_id: int, dataset_name: str, data_source_arn: str) -> str:
     table_map = {
         'default': {
             'S3Source': {
-                'DataSourceArn': f'arn:aws:s3:::{bucket}',
-                'InputColumns': [
-                    {'Name': _name, 'Type': _type} for (_name, _type) in SAMPLE_DATA_COLUMNS.items()
-                ],
+                'DataSourceArn': data_source_arn,
+                'InputColumns': [{'Name': name, 'Type': 'STRING'} for name in SAMPLE_DATA_COLUMNS],
             }
         }
     }
@@ -80,9 +99,19 @@ def create_quicksight_dataset(aws_account_id: int, dataset_name: str, bucket: st
     )['DataSetId']
 
 
+@task(trigger_rule=TriggerRule.ALL_DONE)
+def delete_quicksight_data_source(aws_account_id: str, datasource_name: str):
+    boto3.client('quicksight').delete_data_source(AwsAccountId=aws_account_id, DataSourceId=datasource_name)
+
+
+@task(trigger_rule=TriggerRule.ALL_DONE)
+def delete_dataset(aws_account_id: str, dataset_name: str):
+    boto3.client('quicksight').delete_data_set(AwsAccountId=aws_account_id, DataSetId=dataset_name)
+
+
 with DAG(
     dag_id=DAG_ID,
-    schedule_interval='@once',
+    schedule_interval=None,
     start_date=datetime(2021, 1, 1),
     tags=["example"],
     catchup=False,
@@ -92,21 +121,43 @@ with DAG(
 
     env_id = test_context[ENV_ID_KEY]
     bucket_name = f'{env_id}-quicksight-bucket'
-    dataset_id = f'{env_id}-dataset'
-    ingestion_id = f'{env_id}-ingestion'
+    data_filename = 'sample_data.csv'
+    dataset_id = f'{env_id}-data-set'
+    datasource_id = f'{env_id}-data-source'
+    ingestion_id = f'{env_id}-ingestion-1'
+    manifest_filename = f'{env_id}-manifest.json'
+    manifest_contents = {
+        # TODO: try using the s3://{bucket}/{key} format once the rest works
+        'fileLocations': [{'URIs': [f'https://{bucket_name}.s3.amazonaws.com/{data_filename}']}]
+    }
 
     create_s3_bucket = S3CreateBucketOperator(task_id='create_s3_bucket', bucket_name=bucket_name)
     await_create_bucket = await_bucket(bucket_name)
 
+    upload_manifest_file = S3CreateObjectOperator(
+        task_id='upload_manifest_file',
+        s3_bucket=bucket_name,
+        s3_key=manifest_filename,
+        data=json.dumps(manifest_contents),
+        replace=True,
+    )
+
     upload_sample_data = S3CreateObjectOperator(
         task_id='upload_sample_data',
         s3_bucket=bucket_name,
-        s3_key='sample_data.csv',
+        s3_key=data_filename,
         data=SAMPLE_DATA,
         replace=True,
     )
 
-    create_dataset = create_quicksight_dataset(account_id, dataset_id, bucket_name)
+    data_source = create_quicksight_data_source(
+        aws_account_id=account_id,
+        datasource_name=datasource_id,
+        bucket=bucket_name,
+        manifest_key=manifest_filename,
+    )
+
+    create_dataset = create_quicksight_dataset(account_id, dataset_id, data_source)
 
     # [START howto_operator_quicksight_create_ingestion]
     create_ingestion = QuickSightCreateIngestionOperator(
@@ -126,19 +177,29 @@ with DAG(
     )
     # [END howto_sensor_quicksight]
 
+    delete_bucket = S3DeleteBucketOperator(
+        task_id='delete_s3_bucket',
+        trigger_rule=TriggerRule.ALL_DONE,
+        bucket_name=bucket_name,
+        force_delete=True,
+    )
+
     chain(
         # TEST SETUP
         test_context,
         account_id,
         create_s3_bucket,
         await_create_bucket,
+        upload_manifest_file,
         upload_sample_data,
+        data_source,
         create_dataset,
         # TEST BODY
         create_ingestion,
         await_job,
         # TEST TEARDOWN
         # delete_ingestion(ingestion_id),
-        # delete_dataset(dataset_id),
-        # delete_bucket(bucket_name),
+        delete_dataset(account_id, dataset_id),
+        delete_quicksight_data_source(account_id, datasource_id),
+        delete_bucket,
     )
