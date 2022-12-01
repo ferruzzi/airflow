@@ -22,6 +22,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from botocore.waiter import Waiter
 
 from airflow.providers.amazon.aws.hooks.eks import ClusterStates, EksHook
 from airflow.providers.amazon.aws.operators.eks import (
@@ -59,6 +60,17 @@ CREATE_NODEGROUP_KWARGS = {
     "capacityType": "ON_DEMAND",
     "instanceTypes": "t3.large",
 }
+
+
+def assert_expected_waiter_type(waiter: mock.MagicMock, expected: str):
+    """
+    There does not appear to be a straight-forward way to assert the type of waiter.
+    Instead, get the class name and check if it contains the expected name.
+
+    :param waiter: A mocked Boto3 Waiter object.
+    :param expected: The expected class name of the Waiter object, for example "ClusterActive".
+    """
+    assert expected in str(type(waiter.call_args[0][0]))
 
 
 class ClusterParams(TypedDict):
@@ -178,11 +190,25 @@ class TestEksCreateClusterOperator(unittest.TestCase):
             mock_create_cluster.assert_called_with(**convert_keys(parameters))
             mock_create_nodegroup.assert_not_called()
 
+    @mock.patch.object(Waiter, "wait", return_value=None)
+    @mock.patch.object(EksHook, "create_cluster")
+    @mock.patch.object(EksHook, "create_nodegroup")
+    def test_execute_create_cluster_with_wait(self, mock_create_nodegroup, mock_create_cluster, mock_waiter):
+        self.create_cluster_operator_without_kwargs.wait_for_completion = True
+
+        self.create_cluster_operator_without_kwargs.execute({})
+
+        mock_create_cluster.assert_called_with(**convert_keys(self.create_cluster_params))
+        mock_create_nodegroup.assert_not_called()
+        mock_waiter.assert_called_once_with(mock.ANY, name=CLUSTER_NAME)
+        assert_expected_waiter_type(mock_waiter, "ClusterActive")
+
+    @mock.patch.object(Waiter, "wait", return_value=None)
     @mock.patch.object(EksHook, "get_cluster_state")
     @mock.patch.object(EksHook, "create_cluster")
     @mock.patch.object(EksHook, "create_nodegroup")
     def test_execute_when_called_with_nodegroup_creates_both(
-        self, mock_create_nodegroup, mock_create_cluster, mock_cluster_state
+        self, mock_create_nodegroup, mock_create_cluster, mock_cluster_state, mock_waiter
     ):
         mock_cluster_state.return_value = ClusterStates.ACTIVE
 
@@ -190,12 +216,34 @@ class TestEksCreateClusterOperator(unittest.TestCase):
 
         mock_create_cluster.assert_called_once_with(**convert_keys(self.create_cluster_params))
         mock_create_nodegroup.assert_called_once_with(**convert_keys(self.create_nodegroup_params))
+        mock_waiter.assert_called_once_with(mock.ANY, name=CLUSTER_NAME)
+        assert_expected_waiter_type(mock_waiter, "ClusterActive")
 
+    @mock.patch.object(Waiter, "wait", return_value=None)
+    @mock.patch.object(EksHook, "get_cluster_state")
+    @mock.patch.object(EksHook, "create_cluster")
+    @mock.patch.object(EksHook, "create_nodegroup")
+    def test_execute_with_wait_when_called_with_nodegroup_creates_both(
+        self, mock_create_nodegroup, mock_create_cluster, mock_cluster_state, mock_waiter
+    ):
+        mock_cluster_state.return_value = ClusterStates.ACTIVE
+        self.create_cluster_operator_with_nodegroup.wait_for_completion = True
+
+        self.create_cluster_operator_with_nodegroup.execute({})
+
+        mock_create_cluster.assert_called_once_with(**convert_keys(self.create_cluster_params))
+        mock_create_nodegroup.assert_called_once_with(**convert_keys(self.create_nodegroup_params))
+        # Calls waiter once for the cluster and once for the nodegroup.
+        assert mock_waiter.call_count == 2
+        mock_waiter.assert_called_with(mock.ANY, clusterName=CLUSTER_NAME, nodegroupName=NODEGROUP_NAME)
+        assert_expected_waiter_type(mock_waiter, "NodegroupActive")
+
+    @mock.patch.object(Waiter, "wait", return_value=None)
     @mock.patch.object(EksHook, "get_cluster_state")
     @mock.patch.object(EksHook, "create_cluster")
     @mock.patch.object(EksHook, "create_fargate_profile")
     def test_execute_when_called_with_fargate_creates_both(
-        self, mock_create_fargate_profile, mock_create_cluster, mock_cluster_state
+        self, mock_create_fargate_profile, mock_create_cluster, mock_cluster_state, mock_waiter
     ):
         mock_cluster_state.return_value = ClusterStates.ACTIVE
 
@@ -205,6 +253,31 @@ class TestEksCreateClusterOperator(unittest.TestCase):
         mock_create_fargate_profile.assert_called_once_with(
             **convert_keys(self.create_fargate_profile_params)
         )
+        mock_waiter.assert_called_once_with(mock.ANY, name=CLUSTER_NAME)
+        assert_expected_waiter_type(mock_waiter, "ClusterActive")
+
+    @mock.patch.object(Waiter, "wait", return_value=None)
+    @mock.patch.object(EksHook, "get_cluster_state")
+    @mock.patch.object(EksHook, "create_cluster")
+    @mock.patch.object(EksHook, "create_fargate_profile")
+    def test_execute_with_wait_when_called_with_fargate_creates_both(
+        self, mock_create_fargate_profile, mock_create_cluster, mock_cluster_state, mock_waiter
+    ):
+        mock_cluster_state.return_value = ClusterStates.ACTIVE
+        self.create_cluster_operator_with_fargate_profile.wait_for_completion = True
+
+        self.create_cluster_operator_with_fargate_profile.execute({})
+
+        mock_create_cluster.assert_called_once_with(**convert_keys(self.create_cluster_params))
+        mock_create_fargate_profile.assert_called_once_with(
+            **convert_keys(self.create_fargate_profile_params)
+        )
+        # Calls waiter once for the cluster and once for the nodegroup.
+        assert mock_waiter.call_count == 2
+        mock_waiter.assert_called_with(
+            mock.ANY, clusterName=CLUSTER_NAME, fargateProfileName=FARGATE_PROFILE_NAME
+        )
+        assert_expected_waiter_type(mock_waiter, "FargateProfileActive")
 
     def test_invalid_compute_value(self):
         invalid_compute = EksCreateClusterOperator(
@@ -262,8 +335,11 @@ class TestEksCreateFargateProfileOperator(unittest.TestCase):
             **self.create_fargate_profile_params,
         )
 
+    @mock.patch.object(Waiter, "wait")
     @mock.patch.object(EksHook, "create_fargate_profile")
-    def test_execute_when_fargate_profile_does_not_already_exist(self, mock_create_fargate_profile):
+    def test_execute_when_fargate_profile_does_not_already_exist(
+        self, mock_create_fargate_profile, mock_waiter
+    ):
         operator_under_test = [
             (self.create_fargate_profile_operator_without_kwargs, self.create_fargate_profile_params),
             (
@@ -277,6 +353,31 @@ class TestEksCreateFargateProfileOperator(unittest.TestCase):
                 operator.execute({})
 
                 mock_create_fargate_profile.assert_called_with(**convert_keys(parameters))
+                mock_waiter.assert_not_called()
+
+    @mock.patch.object(Waiter, "wait", return_value=None)
+    @mock.patch.object(EksHook, "create_fargate_profile")
+    def test_execute_with_wait_when_fargate_profile_does_not_already_exist(
+        self, mock_create_fargate_profile, mock_waiter
+    ):
+        operator_under_test = [
+            (self.create_fargate_profile_operator_without_kwargs, self.create_fargate_profile_params),
+            (
+                self.create_fargate_profile_operator_with_kwargs,
+                {**self.create_fargate_profile_params, **CREATE_FARGATE_PROFILE_KWARGS},
+            ),
+        ]
+
+        for (operator, parameters) in operator_under_test:
+            operator.wait_for_completion = True
+            with self.subTest():
+                operator.execute({})
+
+                mock_create_fargate_profile.assert_called_with(**convert_keys(parameters))
+                mock_waiter.assert_called_with(
+                    mock.ANY, clusterName=CLUSTER_NAME, fargateProfileName=FARGATE_PROFILE_NAME
+                )
+                assert_expected_waiter_type(mock_waiter, "FargateProfileActive")
 
 
 class TestEksCreateNodegroupOperator(unittest.TestCase):
@@ -298,8 +399,9 @@ class TestEksCreateNodegroupOperator(unittest.TestCase):
             **self.create_nodegroup_params,
         )
 
+    @mock.patch.object(Waiter, "wait")
     @mock.patch.object(EksHook, "create_nodegroup")
-    def test_execute_when_nodegroup_does_not_already_exist(self, mock_create_nodegroup):
+    def test_execute_when_nodegroup_does_not_already_exist(self, mock_create_nodegroup, mock_waiter):
         operator_under_test = [
             (self.create_nodegroup_operator_without_kwargs, self.create_nodegroup_params),
             (
@@ -313,6 +415,31 @@ class TestEksCreateNodegroupOperator(unittest.TestCase):
                 operator.execute({})
 
                 mock_create_nodegroup.assert_called_with(**convert_keys(parameters))
+                mock_waiter.assert_not_called()
+
+    @mock.patch.object(Waiter, "wait", return_value=True)
+    @mock.patch.object(EksHook, "create_nodegroup")
+    def test_execute_with_wait_when_nodegroup_does_not_already_exist(
+        self, mock_create_nodegroup, mock_waiter
+    ):
+        operator_under_test = [
+            (self.create_nodegroup_operator_without_kwargs, self.create_nodegroup_params),
+            (
+                self.create_nodegroup_operator_with_kwargs,
+                {**self.create_nodegroup_params, **CREATE_NODEGROUP_KWARGS},
+            ),
+        ]
+
+        for (operator, parameters) in operator_under_test:
+            with self.subTest():
+                operator.wait_for_completion = True
+                operator.execute({})
+
+                mock_create_nodegroup.assert_called_with(**convert_keys(parameters))
+                mock_waiter.assert_called_with(
+                    mock.ANY, clusterName=CLUSTER_NAME, nodegroupName=NODEGROUP_NAME
+                )
+                assert_expected_waiter_type(mock_waiter, "NodegroupActive")
 
 
 class TestEksDeleteClusterOperator(unittest.TestCase):
@@ -323,15 +450,33 @@ class TestEksDeleteClusterOperator(unittest.TestCase):
             task_id=TASK_ID, cluster_name=self.cluster_name
         )
 
+    @mock.patch.object(Waiter, "wait")
     @mock.patch.object(EksHook, "list_nodegroups")
     @mock.patch.object(EksHook, "delete_cluster")
-    def test_existing_cluster_not_in_use(self, mock_delete_cluster, mock_list_nodegroups):
+    def test_existing_cluster_not_in_use(self, mock_delete_cluster, mock_list_nodegroups, mock_waiter):
         mock_list_nodegroups.return_value = []
 
         self.delete_cluster_operator.execute({})
 
         mock_list_nodegroups.assert_called_once
         mock_delete_cluster.assert_called_once_with(name=self.cluster_name)
+        mock_waiter.assert_not_called()
+
+    @mock.patch.object(Waiter, "wait", return_value=None)
+    @mock.patch.object(EksHook, "list_nodegroups")
+    @mock.patch.object(EksHook, "delete_cluster")
+    def test_existing_cluster_not_in_use_with_wait(
+        self, mock_delete_cluster, mock_list_nodegroups, mock_waiter
+    ):
+        mock_list_nodegroups.return_value = []
+        self.delete_cluster_operator.wait_for_completion = True
+
+        self.delete_cluster_operator.execute({})
+
+        mock_list_nodegroups.assert_called_once
+        mock_delete_cluster.assert_called_once_with(name=self.cluster_name)
+        mock_waiter.assert_called_with(mock.ANY, name=CLUSTER_NAME)
+        assert_expected_waiter_type(mock_waiter, "ClusterDeleted")
 
 
 class TestEksDeleteNodegroupOperator(unittest.TestCase):
@@ -343,13 +488,28 @@ class TestEksDeleteNodegroupOperator(unittest.TestCase):
             task_id=TASK_ID, cluster_name=self.cluster_name, nodegroup_name=self.nodegroup_name
         )
 
+    @mock.patch.object(Waiter, "wait")
     @mock.patch.object(EksHook, "delete_nodegroup")
-    def test_existing_nodegroup(self, mock_delete_nodegroup):
+    def test_existing_nodegroup(self, mock_delete_nodegroup, mock_waiter):
         self.delete_nodegroup_operator.execute({})
 
         mock_delete_nodegroup.assert_called_once_with(
             clusterName=self.cluster_name, nodegroupName=self.nodegroup_name
         )
+        mock_waiter.assert_not_called()
+
+    @mock.patch.object(Waiter, "wait", return_value=True)
+    @mock.patch.object(EksHook, "delete_nodegroup")
+    def test_existing_nodegroup_with_wait(self, mock_delete_nodegroup, mock_waiter):
+        self.delete_nodegroup_operator.wait_for_completion = True
+
+        self.delete_nodegroup_operator.execute({})
+
+        mock_delete_nodegroup.assert_called_once_with(
+            clusterName=self.cluster_name, nodegroupName=self.nodegroup_name
+        )
+        mock_waiter.assert_called_with(mock.ANY, clusterName=CLUSTER_NAME, nodegroupName=NODEGROUP_NAME)
+        assert_expected_waiter_type(mock_waiter, "NodegroupDeleted")
 
 
 class TestEksDeleteFargateProfileOperator(unittest.TestCase):
@@ -361,13 +521,30 @@ class TestEksDeleteFargateProfileOperator(unittest.TestCase):
             task_id=TASK_ID, cluster_name=self.cluster_name, fargate_profile_name=self.fargate_profile_name
         )
 
+    @mock.patch.object(Waiter, "wait")
     @mock.patch.object(EksHook, "delete_fargate_profile")
-    def test_existing_fargate_profile(self, mock_delete_fargate_profile):
+    def test_existing_fargate_profile(self, mock_delete_fargate_profile, mock_waiter):
         self.delete_fargate_profile_operator.execute({})
 
         mock_delete_fargate_profile.assert_called_once_with(
             clusterName=self.cluster_name, fargateProfileName=self.fargate_profile_name
         )
+        mock_waiter.assert_not_called()
+
+    @mock.patch.object(Waiter, "wait", return_value=None)
+    @mock.patch.object(EksHook, "delete_fargate_profile")
+    def test_existing_fargate_profile_with_wait(self, mock_delete_fargate_profile, mock_waiter):
+        self.delete_fargate_profile_operator.wait_for_completion = True
+
+        self.delete_fargate_profile_operator.execute({})
+
+        mock_delete_fargate_profile.assert_called_once_with(
+            clusterName=self.cluster_name, fargateProfileName=self.fargate_profile_name
+        )
+        mock_waiter.assert_called_with(
+            mock.ANY, clusterName=CLUSTER_NAME, fargateProfileName=FARGATE_PROFILE_NAME
+        )
+        assert_expected_waiter_type(mock_waiter, "FargateProfileDeleted")
 
 
 class TestEksPodOperator(unittest.TestCase):
