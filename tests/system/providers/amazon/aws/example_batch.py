@@ -33,7 +33,7 @@ from airflow.utils.trigger_rule import TriggerRule
 from tests.system.providers.amazon.aws.utils import (
     ENV_ID_KEY,
     SystemTestContextBuilder,
-    purge_logs,
+    prune_logs,
     split_string,
 )
 
@@ -137,16 +137,6 @@ def delete_job_queue(job_queue_name):
     boto3.client("batch").delete_job_queue(
         jobQueue=job_queue_name,
     )
-
-
-@task(trigger_rule=TriggerRule.ALL_DONE)
-def delete_logs(env_id: str) -> None:
-    generated_log_groups: list[tuple[str, str | None]] = [
-        # Format: ('log group name', 'log stream prefix')
-        ("/aws/batch/job", env_id),
-    ]
-
-    purge_logs(generated_log_groups)
 
 
 with DAG(
@@ -255,7 +245,12 @@ with DAG(
         wait_for_compute_environment_disabled,
         delete_compute_environment(batch_job_compute_environment_name),
         delete_job_definition(batch_job_definition_name),
-        delete_logs(env_id),
+        prune_logs(
+            [
+                # Format: ('log group name', 'log stream prefix')
+                ("/aws/batch/job", env_id)
+            ],
+        ),
     )
 
     from tests.system.utils.watcher import watcher

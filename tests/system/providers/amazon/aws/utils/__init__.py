@@ -29,6 +29,8 @@ from botocore.client import BaseClient
 from botocore.exceptions import ClientError, NoCredentialsError
 
 from airflow.decorators import task
+from airflow.utils.state import State
+from airflow.utils.trigger_rule import TriggerRule
 
 ENV_ID_ENVIRON_KEY: str = "SYSTEM_TESTS_ENV_ID"
 ENV_ID_KEY: str = "ENV_ID"
@@ -246,6 +248,29 @@ def set_env_id() -> str:
 
     os.environ[ENV_ID_ENVIRON_KEY] = env_id
     return env_id
+
+
+def all_tasks_passed(ti) -> bool:
+    task_runs = ti.get_dagrun().get_task_instances()
+    run_results = [False if _task.state == State.FAILED else True for _task in task_runs]
+    return all(run_results)
+
+
+@task(trigger_rule=TriggerRule.ALL_DONE)
+def prune_logs(
+    logs: list[tuple[str, str | None]],
+    force_delete: bool = False,
+    retry: bool = False,
+    retry_times: int = 3,
+    ti=None,
+) -> None:
+
+    if all_tasks_passed(ti):
+        purge_logs(logs, force_delete, retry, retry_times)
+    else:
+        client: BaseClient = boto3.client("logs")
+        for group, _ in logs:
+            client.put_retention_policy(logGroupName=group, retentionInDays=30)
 
 
 def purge_logs(
