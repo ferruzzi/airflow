@@ -302,6 +302,7 @@ ldap = [
     "python-ldap",
 ]
 leveldb = ["plyvel"]
+otel = ["opentelemetry-api==1.16.0", "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus"]
 pandas = [
     "pandas>=0.17.1",
 ]
@@ -466,6 +467,7 @@ CORE_EXTRAS_DEPENDENCIES: dict[str, list[str]] = {
     "kerberos": kerberos,
     "ldap": ldap,
     "leveldb": leveldb,
+    "otel": otel,
     "pandas": pandas,
     "password": password,
     "rabbitmq": rabbitmq,

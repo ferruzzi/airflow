@@ -24,7 +24,15 @@ import socket
 import string
 import time
 from functools import partial, wraps
-from typing import TYPE_CHECKING, Callable, TypeVar, cast
+from typing import TYPE_CHECKING, Callable, Iterable, TypeVar, cast
+
+from opentelemetry import metrics
+from opentelemetry.metrics import Instrument
+from opentelemetry.sdk import util
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics._internal.measurement import Measurement
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 
 from airflow.configuration import conf
 from airflow.exceptions import AirflowConfigException, InvalidStatsNameException
@@ -532,6 +540,146 @@ class SafeDogStatsdLogger:
         return Timer()
 
 
+class CounterMap:
+    """Stores Otel Counters."""
+
+    def __init__(self, meter):
+        self.meter = meter
+        self.map = {}
+
+    def clear(self) -> None:
+        self.map.clear()
+
+    def get_counter(self, name: str, attributes: dict[str, str] | None = None):
+        key: str = name + str(attributes)
+        if key in self.map.keys():
+            # print("returning counter with " + key)
+            return self.map[key]
+        else:
+            # create if doesn't exist
+            print("--> creating counter with " + key)
+            counter = self.meter.create_up_down_counter(name)
+            self.map[key] = counter
+            return counter
+
+    def del_counter(self, name: str, attributes: dict[str, str] | None = None) -> None:
+        key: str = name + str(attributes)
+        if key in self.map.keys():
+            del self.map[key]
+
+
+class BaseInstrument(Instrument):
+    """Instrument clss is abstract and must be implemented."""
+
+    def __init__(
+        self, name: str, unit: str = "", description: str = "", attributes: dict[str, str] | None = None
+    ):
+        self.name: str = name
+        self.unit: str = unit
+        self.description: str = description
+        self.attributes: dict[str, str] | None = attributes
+
+
+class GaugeMap:
+    """Stores OTel Gauges. For POC purpose this map has been made rather simple."""
+
+    def __init__(self, meter):
+        self.meter = meter
+        self.map = {}
+
+    def clear(self) -> None:
+        self.map.clear()
+
+    # set value would store the value of the gauge
+    def set_value(
+        self,
+        name: str,
+        value: int,
+        unit: str = "",
+        description: str = "",
+        attributes: dict[str, str] | None = None,
+    ) -> None:
+        if not attributes:
+            attributes = {}
+
+        key = name + str(util.get_dict_as_key(attributes))
+        # any previously existing measurement would get effectively overwritten
+        self.map[key] = Measurement(value, BaseInstrument(name, unit, description), attributes)
+
+    # retrieve readings
+    def get_readings(self) -> Iterable[Measurement]:
+        ret = self.poke_readings()
+        # clear the map when getting the readings
+        # in this way, any accumulated gauge wouldn't survive
+        # once the readings are extracted.
+        self.clear()
+        return ret
+
+    # poke readings, without clearing the gauge map
+    def poke_readings(self) -> Iterable[Measurement]:
+        ret = []
+        for val in self.map.values():
+            ret.append(val)
+        return ret
+
+
+class SafeOtelLogger:
+    """Otel Logger"""
+
+    def __init__(self, otel_provider, prefix: str = "airflow", allow_list_validator=AllowListValidator()):
+        # TODO callable type for provider??
+        self.otel = otel_provider
+        self.prefix: str = prefix
+        self.allow_list_validator = allow_list_validator
+        self.meter = otel_provider.get_meter(__name__)
+        self.counter_map = CounterMap(self.meter)
+        self.gauge_map = GaugeMap(self.meter)
+
+    @validate_stat
+    def incr(self, stat: str, count: int = 1, rate: float = 1, tags: dict[str, str] | None = None):
+        """Increment stat"""
+        if self.allow_list_validator.test(stat):
+            counter = self.counter_map.get_counter(f"{self.prefix}.{stat}")
+            return counter.add(count * rate, attributes=tags)
+        return None
+
+    @validate_stat
+    def decr(self, stat: str, count: int = 1, rate: float = 1, tags: dict[str, str] | None = None):
+        """Decrement stat"""
+        if self.allow_list_validator.test(stat):
+            counter = self.counter_map.get_counter(f"{self.prefix}.{stat}")
+            return counter.add(-1 * (count * rate), attributes=tags)
+        return None
+
+    @validate_stat
+    def gauge(
+        self,
+        stat: str,
+        value: int,
+        rate: int = 1,
+        delta: bool = False,
+        tags: dict[str, str] | None = None,
+    ):
+        """Gauge stat"""
+        if self.allow_list_validator.test(stat):
+            self.gauge_map.set_value(f"{self.prefix}.{stat}", value, attributes=tags)
+        return None
+
+    @validate_stat
+    def timing(self, stat: str, dt: int, tags: dict[str, str] | None = None):
+        """Stats timing"""
+        if self.allow_list_validator.test(stat):
+            if isinstance(dt, datetime.timedelta):
+                dt = dt.total_seconds()
+            self.gauge_map.set_value(f"{self.prefix}.{stat}", dt, attributes=tags)
+        return None
+
+    @validate_stat
+    def timer(self, stat: str | None = None, attributes: dict[str, str] | None = None, *args, **kwargs):
+        """Timer metric that can be cancelled"""
+        return Timer()
+
+
 class _Stats(type):
     factory: Callable[[], StatsLogger]
     instance: StatsLogger | None = None
@@ -553,6 +701,8 @@ class _Stats(type):
                 cls.__class__.factory = cls.get_dogstatsd_logger
             elif conf.getboolean("metrics", "statsd_on"):
                 cls.__class__.factory = cls.get_statsd_logger
+            elif conf.getboolean("metrics", "otel_on"):
+                cls.__class__.factory = cls.get_otel_logger
             else:
                 cls.__class__.factory = DummyStatsLogger
 
@@ -620,6 +770,57 @@ class _Stats(type):
         datadog_metrics_tags = conf.get("metrics", "statsd_datadog_metrics_tags", fallback=True)
         metric_tags_validator = BlockListValidator(conf.get("metrics", "statsd_disabled_tags", fallback=None))
         return SafeDogStatsdLogger(dogstatsd, metrics_validator, datadog_metrics_tags, metric_tags_validator)
+
+    @classmethod
+    def get_otel_logger(cls):
+        """Get Otel logger"""
+        host = conf.get("metrics", "otel_host")  # ex: breeze-opentelemetry-collector
+        port = conf.getint("metrics", "otel_port")  # ex: 4318
+        prefix = conf.get("metrics", "otel_prefix")  # ex: 'airflow'
+
+        # TODO rename existing statsd_allow_list to metrics_allow_list??
+        allow_list = conf.get("metrics", "statsd_allow_list", fallback=None)
+        allow_list_validator = AllowListValidator(allow_list)
+
+        # Following block based on https://opentelemetry.io/docs/instrumentation/python/exporters/
+        # -----------------------------------------------------------------------------------------
+        resource = Resource(attributes={SERVICE_NAME: "Airflow"})
+
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+        from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
+
+        # TODO:  remove console exporter
+        # TODO:  figure out https instead of http ??
+        print(f"[Metric Exporter] Connecting to OTLP at ---> http://{host}:{port}")
+        export_to_console = PeriodicExportingMetricReader(ConsoleMetricExporter())
+        export_to_otlp = PeriodicExportingMetricReader(
+            OTLPMetricExporter(
+                endpoint=f"http://{host}:{port}",
+                headers={"Content-Type": "application/json"},
+                timeout=300,
+            )
+        )
+        metrics.set_meter_provider(
+            MeterProvider(
+                resource=resource,
+                metric_readers=[export_to_otlp, export_to_console],
+                shutdown_on_exit=False,
+            )
+        )
+        # TODO:  I like the metrics.foo() here for clarity, but maybe import these directly?
+        return SafeOtelLogger(metrics.get_meter_provider(), prefix, allow_list_validator)
+        # -----------------------------------------------------------------------------------------
+
+        # -----------------------------------------------------------------------------------------
+        # TODO:  the following comment is copypasta from POC2 and not confirmed
+        # if we do not set 'shutdown_on_exit' to False, somehow(?) the
+        # MeterProvider will constantly get shutdown every second
+        # something having to do with the following code:
+        # if shutdown_on_exit:
+        #     self._atexit_handler = register(self.shutdown)
+        # not sure why...
+        # metrics.set_meter_provider(MeterProvider(metric_readers=[reader], shutdown_on_exit=False))
+        # -----------------------------------------------------------------------------------------
 
     @classmethod
     def get_constant_tags(cls):
