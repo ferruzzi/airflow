@@ -21,18 +21,18 @@ services:
     # TODO:  create/use a custom collector instead of this "all-included" image ??
     image: otel/opentelemetry-collector-contrib:0.70.0
     container_name: "breeze-otel-collector"
-    command: [ --config=/etc/otel-collector-config.yml ]
+    command: [--config=/etc/otel-collector-config.yml]
     volumes:
       - ./otel-collector-config.yml:/etc/otel-collector-config.yml
     ports:
-      - "28888:8888"    # Prometheus metrics exposed by the collector
       - "24318:4318"    # OTLP http receiver
-      - "13133:13133"   # health_check extension
-      # TODO:  Cleanup unneeded ports
-      - "24317:4317"    # OTLP gRPC receiver
-      - "1888:1888"     # pprof extension
       - "28889:8889"    # Prometheus exporter metrics
-      - "55679:55679"   # zpages extension
+      # TODO:  Cleanup unneeded ports
+      #      - "28888:8888"    # Prometheus metrics exposed by the collector
+      #      - "13133:13133"   # health_check extension
+      #      - "24317:4317"    # OTLP gRPC receiver
+      #      - "1888:1888"     # pprof extension
+      #      - "55679:55679"   # zpages extension
 
   prometheus:
     image: prom/prometheus
@@ -65,6 +65,8 @@ services:
       - AIRFLOW__METRICS__OTEL_ON=True
       - AIRFLOW__METRICS__OTEL_HOST=breeze-otel-collector
       - AIRFLOW__METRICS__OTEL_PORT=4318
+      - AIRFLOW__METRICS__OTEL_INTERVAL_MILLIS=30000
+
     depends_on:
       - otel-collector
       - prometheus
