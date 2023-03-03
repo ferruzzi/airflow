@@ -27,11 +27,12 @@ from functools import partial, wraps
 from typing import TYPE_CHECKING, Callable, Iterable, TypeVar, cast
 
 from opentelemetry import metrics
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.metrics import Instrument
 from opentelemetry.sdk import util
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics._internal.measurement import Measurement
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.metrics.export import ConsoleMetricExporter, PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 
 from airflow.configuration import conf
@@ -627,7 +628,7 @@ class SafeOtelLogger:
     """Otel Logger"""
 
     def __init__(self, otel_provider, prefix: str = "airflow", allow_list_validator=AllowListValidator()):
-        # TODO callable type for provider??
+        # TODO what is the type hint for provider?? "callable"??
         self.otel = otel_provider
         self.prefix: str = prefix
         self.allow_list_validator = allow_list_validator
@@ -774,40 +775,46 @@ class _Stats(type):
     @classmethod
     def get_otel_logger(cls):
         """Get Otel logger"""
-        host = conf.get("metrics", "otel_host")  # ex: breeze-opentelemetry-collector
+        host = conf.get("metrics", "otel_host")  # ex: "breeze-otel-collector"
         port = conf.getint("metrics", "otel_port")  # ex: 4318
-        prefix = conf.get("metrics", "otel_prefix")  # ex: 'airflow'
+        prefix = conf.get("metrics", "otel_prefix")  # ex: "airflow"
+        # TODO I shouldn't have to cast this to an int??
+        interval = int(conf.get("metrics", "otel_interval_millis"))  # ex: 30000
 
-        # TODO rename existing statsd_allow_list to metrics_allow_list??
+        # TODO replace existing statsd_allow_list with metrics_allow_list??
         allow_list = conf.get("metrics", "statsd_allow_list", fallback=None)
         allow_list_validator = AllowListValidator(allow_list)
 
-        # Following block based on https://opentelemetry.io/docs/instrumentation/python/exporters/
-        # -----------------------------------------------------------------------------------------
         resource = Resource(attributes={SERVICE_NAME: "Airflow"})
+        # TODO:  figure out https instead of http ??
+        endpoint = f"http://{host}:{port}/v1/metrics"
 
-        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
-        from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
+        print(f"[Metric Exporter] Connecting to OTLP at ---> {endpoint}")
+        readers = [
+            PeriodicExportingMetricReader(
+                OTLPMetricExporter(
+                    endpoint=endpoint,
+                    headers={"Content-Type": "application/json"},
+                ),
+                export_interval_millis=interval,
+            )
+        ]
 
         # TODO:  remove console exporter
-        # TODO:  figure out https instead of http ??
-        print(f"[Metric Exporter] Connecting to OTLP at ---> http://{host}:{port}")
-        export_to_console = PeriodicExportingMetricReader(ConsoleMetricExporter())
-        export_to_otlp = PeriodicExportingMetricReader(
-            OTLPMetricExporter(
-                endpoint=f"http://{host}:{port}",
-                headers={"Content-Type": "application/json"},
-                timeout=300,
-            )
-        )
+        debug = True
+        if debug:
+            export_to_console = PeriodicExportingMetricReader(ConsoleMetricExporter())
+            readers.append(export_to_console)
+
         metrics.set_meter_provider(
             MeterProvider(
                 resource=resource,
-                metric_readers=[export_to_otlp, export_to_console],
+                metric_readers=readers,
                 shutdown_on_exit=False,
-            )
+            ),
         )
         # TODO:  I like the metrics.foo() here for clarity, but maybe import these directly?
+
         return SafeOtelLogger(metrics.get_meter_provider(), prefix, allow_list_validator)
         # -----------------------------------------------------------------------------------------
 
