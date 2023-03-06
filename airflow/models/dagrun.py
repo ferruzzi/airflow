@@ -903,10 +903,18 @@ class DagRun(Base, LoggingMixin):
 
         duration = self.end_date - self.start_date
         if self.state == State.SUCCESS:
-            Stats.timing(f"dagrun.duration.success.{self.dag_id}", duration)
+            Stats.timing(
+                f"dagrun.duration.success.{self.dag_id}",
+                duration,
+                tags={"dag_id": self.dag_id, "run_type": self.run_type},
+            )
             Stats.timing("dagrun.duration.success", duration, tags={"dag_id": self.dag_id})
         elif self.state == State.FAILED:
-            Stats.timing(f"dagrun.duration.failed.{self.dag_id}", duration)
+            Stats.timing(
+                f"dagrun.duration.failed.{self.dag_id}",
+                duration,
+                tags={"dag_id": self.dag_id, "run_type": self.run_type},
+            )
             Stats.timing("dagrun.duration.failed", duration, tags={"dag_id": self.dag_id})
 
     @provide_session
