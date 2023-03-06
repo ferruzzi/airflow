@@ -23,6 +23,7 @@ import logging
 import socket
 import string
 import time
+import warnings
 from functools import partial, wraps
 from typing import TYPE_CHECKING, Callable, Iterable, TypeVar, cast
 
@@ -608,7 +609,7 @@ class GaugeMap:
         self.map[key] = Measurement(value, BaseInstrument(name, unit, description), attributes)
 
     # retrieve readings
-    def get_readings(self) -> Iterable[Measurement]:
+    def get_readings(self, callback_options) -> Iterable[Measurement]:
         ret = self.poke_readings()
         # clear the map when getting the readings
         # in this way, any accumulated gauge wouldn't survive
@@ -635,45 +636,48 @@ class SafeOtelLogger:
         self.meter = otel_provider.get_meter(__name__)
         self.counter_map = CounterMap(self.meter)
         self.gauge_map = GaugeMap(self.meter)
+        self.meter.create_observable_gauge(name="airflow", callbacks=[self.gauge_map.get_readings])
 
     @validate_stat
     def incr(self, stat: str, count: int = 1, rate: float = 1, tags: dict[str, str] | None = None):
         """Increment stat"""
+        value = count * rate
+        warnings.warn(f"*** INCREMENTING {stat}:\t{value}")
+
         if self.allow_list_validator.test(stat):
             counter = self.counter_map.get_counter(f"{self.prefix}.{stat}")
-            return counter.add(count * rate, attributes=tags)
-        return None
+            return counter.add(value, attributes=tags)
 
     @validate_stat
     def decr(self, stat: str, count: int = 1, rate: float = 1, tags: dict[str, str] | None = None):
         """Decrement stat"""
+        value = -1 * (count * rate)
+        warnings.warn(f"*** DECREMENTING {stat}:\t{value}")
+
         if self.allow_list_validator.test(stat):
             counter = self.counter_map.get_counter(f"{self.prefix}.{stat}")
-            return counter.add(-1 * (count * rate), attributes=tags)
-        return None
+            return counter.add(value, attributes=tags)
 
     @validate_stat
     def gauge(
         self,
         stat: str,
         value: int,
-        rate: int = 1,
-        delta: bool = False,
         tags: dict[str, str] | None = None,
     ):
         """Gauge stat"""
+        # warnings.warn(f"****** UPDATING GAUGE ******\n{stat}:\t{value}")
         if self.allow_list_validator.test(stat):
             self.gauge_map.set_value(f"{self.prefix}.{stat}", value, attributes=tags)
-        return None
 
     @validate_stat
     def timing(self, stat: str, dt: int, tags: dict[str, str] | None = None):
         """Stats timing"""
+        warnings.warn(f"*** UPDATE TIMER {stat}:\t{dt}")
         if self.allow_list_validator.test(stat):
             if isinstance(dt, datetime.timedelta):
                 dt = dt.total_seconds()
             self.gauge_map.set_value(f"{self.prefix}.{stat}", dt, attributes=tags)
-        return None
 
     @validate_stat
     def timer(self, stat: str | None = None, attributes: dict[str, str] | None = None, *args, **kwargs):
