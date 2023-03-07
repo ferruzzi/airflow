@@ -707,6 +707,10 @@ class _Stats(type):
             elif conf.getboolean("metrics", "statsd_on"):
                 cls.__class__.factory = cls.get_statsd_logger
             elif conf.getboolean("metrics", "otel_on"):
+                warnings.warn(
+                    "OpenTelemetry support is currently experimental.  "
+                    "For more information, see `dev/OTEL_STATUS.md`."
+                )
                 cls.__class__.factory = cls.get_otel_logger
             else:
                 cls.__class__.factory = NullStatsLogger
@@ -782,8 +786,7 @@ class _Stats(type):
         host = conf.get("metrics", "otel_host")  # ex: "breeze-otel-collector"
         port = conf.getint("metrics", "otel_port")  # ex: 4318
         prefix = conf.get("metrics", "otel_prefix")  # ex: "airflow"
-        # TODO I shouldn't have to cast this to an int??
-        interval = int(conf.get("metrics", "otel_interval_millis"))  # ex: 30000
+        interval = conf.getint("metrics", "otel_interval_millis")  # ex: 30000
 
         # TODO replace existing statsd_allow_list with metrics_allow_list??
         allow_list = conf.get("metrics", "statsd_allow_list", fallback=None)
