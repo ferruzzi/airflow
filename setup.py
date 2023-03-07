@@ -302,7 +302,7 @@ ldap = [
     "python-ldap",
 ]
 leveldb = ["plyvel"]
-otel = ["opentelemetry-api==1.16.0", "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus"]
+otel = ["opentelemetry-api==1.15.0", "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus"]
 pandas = [
     "pandas>=0.17.1",
 ]
@@ -330,7 +330,7 @@ webhdfs = [
 
 # Mypy 0.900 and above ships only with stubs from stdlib so if we need other stubs, we need to install them
 # manually as `types-*`. See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
-# for details. Wy want to install them explicitly because we want to eventually move to
+# for details. We want to install them explicitly because we want to eventually move to
 # mypyd which does not support installing the types dynamically with --install-types
 mypy_dependencies = [
     # TODO: upgrade to newer versions of MyPy continuously as they are released
