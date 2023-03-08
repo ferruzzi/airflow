@@ -707,10 +707,6 @@ class _Stats(type):
             elif conf.getboolean("metrics", "statsd_on"):
                 cls.__class__.factory = cls.get_statsd_logger
             elif conf.getboolean("metrics", "otel_on"):
-                warnings.warn(
-                    "OpenTelemetry support is currently experimental.  "
-                    "For more information, see `dev/OTEL_STATUS.md`."
-                )
                 cls.__class__.factory = cls.get_otel_logger
             else:
                 cls.__class__.factory = DummyStatsLogger
