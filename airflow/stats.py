@@ -35,6 +35,7 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics._internal.measurement import Measurement
 from opentelemetry.sdk.metrics.export import ConsoleMetricExporter, PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from statsd import StatsClient
 
 from airflow.configuration import conf
 from airflow.exceptions import AirflowConfigException, InvalidStatsNameException
@@ -46,17 +47,17 @@ log = logging.getLogger(__name__)
 class TimerProtocol(Protocol):
     """Type protocol for StatsLogger.timer."""
 
-    def __enter__(self):
+    def __enter__(self) -> Timer:
         ...
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
         ...
 
-    def start(self):
+    def start(self) -> Timer:
         """Start the timer."""
         ...
 
-    def stop(self, send=True):
+    def stop(self, send: bool = True) -> None:
         """Stop, and (by default) submit the timer to StatsD."""
         ...
 
@@ -169,23 +170,23 @@ class Timer(TimerProtocol):
     _start_time: int | None
     duration: int | None
 
-    def __init__(self, real_timer=None):
+    def __init__(self, real_timer: Timer = None) -> None:
         self.real_timer = real_timer
 
-    def __enter__(self):
+    def __enter__(self) -> Timer:
         return self.start()
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.stop()
 
-    def start(self):
+    def start(self) -> Timer:
         """Start the timer."""
         if self.real_timer:
             self.real_timer.start()
         self._start_time = int(time.perf_counter())
         return self
 
-    def stop(self, send=True):
+    def stop(self, send: bool = True) -> None:
         """Stop the timer, and optionally send it to stats backend."""
         self.duration = int(time.perf_counter() - self._start_time)
         if send and self.real_timer:
@@ -197,12 +198,14 @@ class Timer(TimerProtocol):
 ALLOWED_CHARACTERS = set(string.ascii_letters + string.digits + "_.-")
 
 
-def stat_name_default_handler(stat_name, max_length=250, allowed_chars=ALLOWED_CHARACTERS) -> str:
+def stat_name_default_handler(stat_name: str, max_length: int = 250, allowed_chars: list[str] | None = None) -> str:
     """
     Validate the StatsD stat name.
 
     Apply changes when necessary and return the transformed stat name.
     """
+    if allowed_chars is None:
+        allowed_chars = ALLOWED_CHARACTERS
     if not isinstance(stat_name, str):
         raise InvalidStatsNameException("The stat_name has to be a string")
     if len(stat_name) > max_length:
@@ -238,7 +241,7 @@ def validate_stat(fn: T) -> T:
     """
 
     @wraps(fn)
-    def wrapper(self, stat=None, *args, **kwargs):
+    def wrapper(self, stat: str | None = None, *args, **kwargs):
         try:
             if stat is not None:
                 handler_stat_name_func = get_current_handler_stat_name_func()
@@ -263,11 +266,11 @@ class ListValidator(metaclass=abc.ABCMeta):
         )
 
     @classmethod
-    def __subclasshook__(cls, subclass):
+    def __subclasshook__(cls, subclass) -> bool:
         return hasattr(subclass, "test") and callable(subclass.test) or NotImplemented
 
     @abc.abstractmethod
-    def test(self, name):
+    def test(self, name: str) -> bool:
         """Test if name is allowed"""
         raise NotImplementedError
 
@@ -275,7 +278,7 @@ class ListValidator(metaclass=abc.ABCMeta):
 class AllowListValidator(ListValidator):
     """AllowListValidator only allows names that match the allowed prefixes."""
 
-    def test(self, name):
+    def test(self, name: str) -> bool:
         if self.validate_list is not None:
             return name.strip().lower().startswith(self.validate_list)
         else:
@@ -285,7 +288,7 @@ class AllowListValidator(ListValidator):
 class BlockListValidator(ListValidator):
     """BlockListValidator only allows names that do not match the blocked prefixes."""
 
-    def test(self, name):
+    def test(self, name: str) -> bool:
         if self.validate_list is not None:
             return not name.strip().lower().startswith(self.validate_list)
         else:
@@ -296,7 +299,7 @@ def prepare_stat_with_tags(fn: T) -> T:
     """Add tags to stat with influxdb standard format if influxdb_tags_enabled is True."""
 
     @wraps(fn)
-    def wrapper(self, stat=None, *args, tags=None, **kwargs):
+    def wrapper(self, stat: str | None = None, *args, tags: dict[str, str] | None = None, **kwargs) -> Callable[[str], str]:
         if self.influxdb_tags_enabled:
             if stat is not None and tags is not None:
                 for k, v in tags.items():
@@ -314,23 +317,23 @@ class NullStatsLogger:
     """If no StatsLogger is configured, NullStatsLogger is used as a fallback."""
 
     @classmethod
-    def incr(cls, stat, count=1, rate=1, *, tags=None):
+    def incr(cls, stat: str, count: int = 1, rate: float = 1, *, tags: dict[str, str] | None = None) -> None:
         """Increment stat."""
 
     @classmethod
-    def decr(cls, stat, count=1, rate=1, *, tags=None):
+    def decr(cls, stat: str, count: int = 1, rate: float = 1, *, tags: dict[str, str] | None = None) -> None:
         """Decrement stat."""
 
     @classmethod
-    def gauge(cls, stat, value, rate=1, delta=False, *, tags=None):
+    def gauge(cls, stat: str, value: int, rate: float = 1, delta: bool = False, *, tags: dict[str, str] | None = None) -> None:
         """Gauge stat."""
 
     @classmethod
-    def timing(cls, stat, dt, *, tags=None):
+    def timing(cls, stat: str, dt: float, *, tags: dict[str, str] | None = None) -> None:
         """Stats timing."""
 
     @classmethod
-    def timer(cls, *args, **kwargs):
+    def timer(cls, *args, **kwargs) -> TimerProtocol:
         """Timer metric that can be cancelled."""
         return Timer()
 
@@ -340,9 +343,9 @@ class SafeStatsdLogger:
 
     def __init__(
         self,
-        statsd_client,
+        statsd_client: StatsClient,
         metrics_validator: ListValidator = AllowListValidator(),
-        influxdb_tags_enabled=False,
+        influxdb_tags_enabled: bool = False,
         metric_tags_validator: ListValidator = AllowListValidator(),
     ):
         self.statsd = statsd_client
@@ -359,7 +362,7 @@ class SafeStatsdLogger:
         rate: float = 1,
         *,
         tags: dict[str, str] | None = None,
-    ):
+    ) -> None:
         """Increment stat."""
         if self.metrics_validator.test(stat):
             return self.statsd.incr(stat, count, rate)
@@ -430,11 +433,11 @@ class SafeDogStatsdLogger:
 
     def __init__(
         self,
-        dogstatsd_client,
+        dogstatsd_client: StatsClient,
         metrics_validator: ListValidator = AllowListValidator(),
-        metrics_tags=False,
+        metrics_tags: bool = False,
         metric_tags_validator: ListValidator = AllowListValidator(),
-    ):
+    ) -> None:
         self.dogstatsd = dogstatsd_client
         self.metrics_validator = metrics_validator
         self.metrics_tags = metrics_tags
@@ -448,7 +451,7 @@ class SafeDogStatsdLogger:
         rate: float = 1,
         *,
         tags: dict[str, str] | None = None,
-    ):
+    ) -> None:
         """Increment stat."""
         if self.metrics_tags and isinstance(tags, dict):
             tags_list = [
@@ -468,7 +471,7 @@ class SafeDogStatsdLogger:
         rate: float = 1,
         *,
         tags: dict[str, str] | None = None,
-    ):
+    ) -> None:
         """Decrement stat."""
         if self.metrics_tags and isinstance(tags, dict):
             tags_list = [
@@ -489,7 +492,7 @@ class SafeDogStatsdLogger:
         delta: bool = False,
         *,
         tags: dict[str, str] | None = None,
-    ):
+    ) -> None:
         """Gauge stat."""
         if self.metrics_tags and isinstance(tags, dict):
             tags_list = [
@@ -508,7 +511,7 @@ class SafeDogStatsdLogger:
         dt: int | float | datetime.timedelta,
         *,
         tags: dict[str, str] | None = None,
-    ):
+    ) -> None:
         """Stats timing."""
         if self.metrics_tags and isinstance(tags, dict):
             tags_list = [
@@ -529,7 +532,7 @@ class SafeDogStatsdLogger:
         *args,
         tags: dict[str, str] | None = None,
         **kwargs,
-    ):
+    ) -> TimerProtocol:
         """Timer metric that can be cancelled."""
         if self.metrics_tags and isinstance(tags, dict):
             tags_list = [
@@ -545,9 +548,8 @@ class SafeDogStatsdLogger:
 class SafeOtelLogger:
     """Otel Logger"""
 
-    def __init__(self, otel_provider, prefix: str = "airflow", allow_list_validator=AllowListValidator()):
-        # TODO what is the type hint for provider?? "callable"??
-        self.otel: Callable = otel_provider
+    def __init__(self, otel_provider: Callable[[str], str], prefix: str = "airflow", allow_list_validator: Callable[[str], str] = AllowListValidator()) -> None:
+        self.otel: Callable[[str], str] = otel_provider
         self.prefix: str = prefix
         self.allow_list_validator = allow_list_validator
         self.meter = otel_provider.get_meter(__name__)
@@ -556,7 +558,7 @@ class SafeOtelLogger:
         self.meter.create_observable_gauge(name="airflow", callbacks=[self.gauge_map.get_readings])
 
     @validate_stat
-    def incr(self, stat: str, count: int = 1, rate: float = 1, tags: dict[str, str] | None = None):
+    def incr(self, stat: str, count: int = 1, rate: float = 1, tags: dict[str, str] | None = None) -> None:
         """Increment stat"""
         value = count * rate
         warnings.warn(f"*** INCREMENTING {stat}:\t{value}")
@@ -566,7 +568,7 @@ class SafeOtelLogger:
             return counter.add(value, attributes=tags)
 
     @validate_stat
-    def decr(self, stat: str, count: int = 1, rate: float = 1, tags: dict[str, str] | None = None):
+    def decr(self, stat: str, count: int = 1, rate: float = 1, tags: dict[str, str] | None = None) -> None:
         """Decrement stat"""
         value = -1 * (count * rate)
         warnings.warn(f"*** DECREMENTING {stat}:\t{value}")
@@ -581,14 +583,14 @@ class SafeOtelLogger:
         stat: str,
         value: int,
         tags: dict[str, str] | None = None,
-    ):
+    ) -> None:
         """Gauge stat"""
         # warnings.warn(f"****** UPDATING GAUGE ******\n{stat}:\t{value}")
         if self.allow_list_validator.test(stat):
             self.gauge_map.set_value(f"{self.prefix}.{stat}", value, attributes=tags)
 
     @validate_stat
-    def timing(self, stat: str, dt: int, tags: dict[str, str] | None = None):
+    def timing(self, stat: str, dt: int, tags: dict[str, str] | None = None) -> None:
         """Stats timing"""
         warnings.warn(f"*** UPDATE TIMER {stat}:\t{dt}")
         if self.allow_list_validator.test(stat):
@@ -597,7 +599,7 @@ class SafeOtelLogger:
             self.gauge_map.set_value(f"{self.prefix}.{stat}", dt, attributes=tags)
 
     @validate_stat
-    def timer(self, stat: str | None = None, attributes: dict[str, str] | None = None, *args, **kwargs):
+    def timer(self, stat: str | None = None, attributes: dict[str, str] | None = None, *args, **kwargs) -> TimerProtocol:
         """Timer metric that can be cancelled"""
         return Timer()
 
@@ -607,7 +609,7 @@ class BaseInstrument(Instrument):
 
     def __init__(
         self, name: str, unit: str = "", description: str = "", attributes: dict[str, str] | None = None
-    ):
+    ) -> None:
         self.name: str = name
         self.unit: str = unit
         self.description: str = description
