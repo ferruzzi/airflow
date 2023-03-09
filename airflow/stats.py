@@ -182,12 +182,12 @@ class Timer(TimerProtocol):
         """Start the timer."""
         if self.real_timer:
             self.real_timer.start()
-        self._start_time = time.perf_counter()
+        self._start_time = int(time.perf_counter())
         return self
 
     def stop(self, send=True):
         """Stop the timer, and optionally send it to stats backend."""
-        self.duration = time.perf_counter() - self._start_time
+        self.duration = int(time.perf_counter() - self._start_time)
         if send and self.real_timer:
             self.real_timer.stop()
 
