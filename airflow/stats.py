@@ -192,31 +192,6 @@ class Timer(TimerProtocol):
             self.real_timer.stop()
 
 
-class NullStatsLogger:
-    """If no StatsLogger is configured, NullStatsLogger is used as a fallback."""
-
-    @classmethod
-    def incr(cls, stat, count=1, rate=1, *, tags=None):
-        """Increment stat."""
-
-    @classmethod
-    def decr(cls, stat, count=1, rate=1, *, tags=None):
-        """Decrement stat."""
-
-    @classmethod
-    def gauge(cls, stat, value, rate=1, delta=False, *, tags=None):
-        """Gauge stat."""
-
-    @classmethod
-    def timing(cls, stat, dt, *, tags=None):
-        """Stats timing."""
-
-    @classmethod
-    def timer(cls, *args, **kwargs):
-        """Timer metric that can be cancelled."""
-        return Timer()
-
-
 # Only characters in the character set are considered valid
 # for the stat_name if stat_name_default_handler is used.
 ALLOWED_CHARACTERS = set(string.ascii_letters + string.digits + "_.-")
@@ -333,6 +308,31 @@ def prepare_stat_with_tags(fn: T) -> T:
         return fn(self, stat, *args, tags=tags, **kwargs)
 
     return cast(T, wrapper)
+
+
+class NullStatsLogger:
+    """If no StatsLogger is configured, NullStatsLogger is used as a fallback."""
+
+    @classmethod
+    def incr(cls, stat, count=1, rate=1, *, tags=None):
+        """Increment stat."""
+
+    @classmethod
+    def decr(cls, stat, count=1, rate=1, *, tags=None):
+        """Decrement stat."""
+
+    @classmethod
+    def gauge(cls, stat, value, rate=1, delta=False, *, tags=None):
+        """Gauge stat."""
+
+    @classmethod
+    def timing(cls, stat, dt, *, tags=None):
+        """Stats timing."""
+
+    @classmethod
+    def timer(cls, *args, **kwargs):
+        """Timer metric that can be cancelled."""
+        return Timer()
 
 
 class SafeStatsdLogger:
@@ -542,95 +542,12 @@ class SafeDogStatsdLogger:
         return Timer()
 
 
-class CounterMap:
-    """Stores Otel Counters."""
-
-    def __init__(self, meter):
-        self.meter = meter
-        self.map = {}
-
-    def clear(self) -> None:
-        self.map.clear()
-
-    def get_counter(self, name: str, attributes: dict[str, str] | None = None):
-        key: str = name + str(attributes)
-        if key in self.map.keys():
-            # print("returning counter with " + key)
-            return self.map[key]
-        else:
-            # create if doesn't exist
-            print("--> creating counter with " + key)
-            counter = self.meter.create_up_down_counter(name)
-            self.map[key] = counter
-            return counter
-
-    def del_counter(self, name: str, attributes: dict[str, str] | None = None) -> None:
-        key: str = name + str(attributes)
-        if key in self.map.keys():
-            del self.map[key]
-
-
-class BaseInstrument(Instrument):
-    """Instrument clss is abstract and must be implemented."""
-
-    def __init__(
-        self, name: str, unit: str = "", description: str = "", attributes: dict[str, str] | None = None
-    ):
-        self.name: str = name
-        self.unit: str = unit
-        self.description: str = description
-        self.attributes: dict[str, str] | None = attributes
-
-
-class GaugeMap:
-    """Stores OTel Gauges. For POC purpose this map has been made rather simple."""
-
-    def __init__(self, meter):
-        self.meter = meter
-        self.map = {}
-
-    def clear(self) -> None:
-        self.map.clear()
-
-    # set value would store the value of the gauge
-    def set_value(
-        self,
-        name: str,
-        value: int,
-        unit: str = "",
-        description: str = "",
-        attributes: dict[str, str] | None = None,
-    ) -> None:
-        if not attributes:
-            attributes = {}
-
-        key = name + str(util.get_dict_as_key(attributes))
-        # any previously existing measurement would get effectively overwritten
-        self.map[key] = Measurement(value, BaseInstrument(name, unit, description), attributes)
-
-    # retrieve readings
-    def get_readings(self, callback_options) -> Iterable[Measurement]:
-        ret = self.poke_readings()
-        # clear the map when getting the readings
-        # in this way, any accumulated gauge wouldn't survive
-        # once the readings are extracted.
-        self.clear()
-        return ret
-
-    # poke readings, without clearing the gauge map
-    def poke_readings(self) -> Iterable[Measurement]:
-        ret = []
-        for val in self.map.values():
-            ret.append(val)
-        return ret
-
-
 class SafeOtelLogger:
     """Otel Logger"""
 
     def __init__(self, otel_provider, prefix: str = "airflow", allow_list_validator=AllowListValidator()):
         # TODO what is the type hint for provider?? "callable"??
-        self.otel = otel_provider
+        self.otel: Callable = otel_provider
         self.prefix: str = prefix
         self.allow_list_validator = allow_list_validator
         self.meter = otel_provider.get_meter(__name__)
@@ -683,6 +600,89 @@ class SafeOtelLogger:
     def timer(self, stat: str | None = None, attributes: dict[str, str] | None = None, *args, **kwargs):
         """Timer metric that can be cancelled"""
         return Timer()
+
+
+class BaseInstrument(Instrument):
+    """Instrument clss is abstract and must be implemented."""
+
+    def __init__(
+        self, name: str, unit: str = "", description: str = "", attributes: dict[str, str] | None = None
+    ):
+        self.name: str = name
+        self.unit: str = unit
+        self.description: str = description
+        self.attributes: dict[str, str] | None = attributes
+
+
+class CounterMap:
+    """Stores Otel Counters."""
+
+    def __init__(self, meter):
+        self.meter = meter
+        self.map = {}
+
+    def clear(self) -> None:
+        self.map.clear()
+
+    def get_counter(self, name: str, attributes: dict[str, str] | None = None):
+        key: str = name + str(attributes)
+        if key in self.map.keys():
+            # print("returning counter with " + key)
+            return self.map[key]
+        else:
+            # create if doesn't exist
+            print("--> creating counter with " + key)
+            counter = self.meter.create_up_down_counter(name)
+            self.map[key] = counter
+            return counter
+
+    def del_counter(self, name: str, attributes: dict[str, str] | None = None) -> None:
+        key: str = name + str(attributes)
+        if key in self.map.keys():
+            del self.map[key]
+
+
+class GaugeMap:
+    """Stores OTel Gauges. For POC purpose this map has been made rather simple."""
+
+    def __init__(self, meter):
+        self.meter = meter
+        self.map = {}
+
+    def clear(self) -> None:
+        self.map.clear()
+
+    # set value would store the value of the gauge
+    def set_value(
+        self,
+        name: str,
+        value: int,
+        unit: str = "",
+        description: str = "",
+        attributes: dict[str, str] | None = None,
+    ) -> None:
+        if not attributes:
+            attributes = {}
+
+        key = name + str(util.get_dict_as_key(attributes))
+        # any previously existing measurement would get effectively overwritten
+        self.map[key] = Measurement(value, BaseInstrument(name, unit, description), attributes)
+
+    # retrieve readings
+    def get_readings(self, callback_options) -> Iterable[Measurement]:
+        ret = self.poke_readings()
+        # clear the map when getting the readings
+        # in this way, any accumulated gauge wouldn't survive
+        # once the readings are extracted.
+        self.clear()
+        return ret
+
+    # poke readings, without clearing the gauge map
+    def poke_readings(self) -> Iterable[Measurement]:
+        ret = []
+        for val in self.map.values():
+            ret.append(val)
+        return ret
 
 
 class _Stats(type):
