@@ -576,7 +576,7 @@ class SafeOtelLogger:
     def incr(self, stat: str, count: int = 1, rate: float = 1, tags: dict[str, str] | None = None):
         """Increment stat"""
         value = count * rate
-        warnings.warn(f"*** INCREMENTING {stat}:\t{value}")
+        # warnings.warn(f"*** INCREMENTING {stat}:\t{value}")
 
         if self.allow_list_validator.test(stat):
             counter = self.counter_map.get_counter(f"{self.prefix}.{stat}")
@@ -586,7 +586,7 @@ class SafeOtelLogger:
     def decr(self, stat: str, count: int = 1, rate: float = 1, tags: dict[str, str] | None = None):
         """Decrement stat"""
         value = -1 * (count * rate)
-        warnings.warn(f"*** DECREMENTING {stat}:\t{value}")
+        # warnings.warn(f"*** DECREMENTING {stat}:\t{value}")
 
         if self.allow_list_validator.test(stat):
             counter = self.counter_map.get_counter(f"{self.prefix}.{stat}")
@@ -607,7 +607,7 @@ class SafeOtelLogger:
     @validate_stat
     def timing(self, stat: str, dt: DeltaType, tags: dict[str, str] | None = None):
         """Stats timing"""
-        warnings.warn(f"*** UPDATE TIMER {stat}:\t{dt}")
+        # warnings.warn(f"*** UPDATE TIMER {stat}:\t{dt}")
         if self.allow_list_validator.test(stat):
             if isinstance(dt, datetime.timedelta):
                 dt = dt.total_seconds()
