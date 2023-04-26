@@ -78,7 +78,8 @@ def enable_access_emr_on_eks(cluster, ns):
     commands = f"""
         curl --silent --location "{file}" | tar xz -C /tmp &&
         sudo mv /tmp/eksctl /usr/local/bin &&
-        eksctl create iamidentitymapping --cluster {cluster} --namespace {ns} --service-name "emr-containers"
+        eksctl create iamidentitymapping --cluster {cluster} --namespace {ns} --service-name "emr-containers" &&
+        eksctl utils associate-iam-oidc-provider --cluster {cluster} --approve
     """
 
     build = subprocess.Popen(
@@ -194,7 +195,8 @@ with DAG(
             "cloudWatchMonitoringConfiguration": {
                 "logGroupName": "/emr-eks-jobs",
                 "logStreamNamePrefix": "airflow",
-            }
+            },
+            "s3MonitoringConfiguration": {"logUri": f"s3://{s3_bucket_name}"}
         },
     }
     # [END howto_operator_emr_eks_config]
@@ -284,12 +286,12 @@ with DAG(
         poke_interval=10,
     )
 
-    delete_bucket = S3DeleteBucketOperator(
-        task_id="delete_bucket",
-        bucket_name=s3_bucket_name,
-        force_delete=True,
-        trigger_rule=TriggerRule.ALL_DONE,
-    )
+    # delete_bucket = S3DeleteBucketOperator(
+    #     task_id="delete_bucket",
+    #     bucket_name=s3_bucket_name,
+    #     force_delete=True,
+    #     trigger_rule=TriggerRule.ALL_DONE,
+    # )
 
     chain(
         # TEST SETUP
@@ -310,7 +312,7 @@ with DAG(
         delete_eks_cluster,
         await_delete_eks_cluster,
         delete_launch_template(launch_template_name),
-        delete_bucket,
+        # delete_bucket,
     )
 
     from tests.system.utils.watcher import watcher
