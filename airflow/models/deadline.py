@@ -16,8 +16,8 @@
 # under the License.
 from __future__ import annotations
 
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Callable
 
 import sqlalchemy_jsonfield
 import uuid6
@@ -90,3 +90,51 @@ class Deadline(Base, LoggingMixin):
     def add_deadline(cls, deadline: Deadline, session: Session = NEW_SESSION):
         """Add the provided deadline to the table."""
         session.add(deadline)
+
+
+class DeadlineTrigger(LoggingMixin):
+    class BaseDeadlineTrigger:
+        def calculate_deadline(self) -> datetime:
+            raise NotImplementedError
+
+    class DagrunExecutionDate(BaseDeadlineTrigger):
+        def calculate_deadline(self) -> datetime:
+            return get_from_db("dagrun", "execution_date")
+
+
+def get_from_db(table_name, column_name):
+    # TODO:
+    #   fetch appropriate timestamp from db
+    #   cast to datetime
+    #   return
+    return datetime(2024, 1, 1)
+
+
+class DeadlineAlert(LoggingMixin):
+    def __init__(
+        self,
+        trigger: type[DeadlineTrigger],
+        interval: timedelta,
+        callback: Callable | str,
+        callback_kwargs: dict | None = None,
+    ):
+        super().__init__()
+        self.trigger = trigger
+        self.interval = interval
+        self.callback_kwargs = callback_kwargs
+
+        if callable(callback):
+            # Get the reference path to the callable in the form `airflow.models.deadline.get_from_db`
+            # TODO:  check the formula below
+            self.callback = f"{callback.__module__}.{callback.__name__}"
+        elif isinstance(callback, str):
+            # Check if the dotpath can resolve to a callable; store it or raise a ValueError
+
+            # try:
+            #   resolve_string_to_callable(callback)
+            #   self.callback = callback
+            # except:
+            #   raise ValueError("callback is not a path to a callable")
+            self.callback = callback
+        else:
+            raise ValueError("callback must be a function or a str representing the dotpath to a callable.")
