@@ -16,6 +16,7 @@
 # under the License.
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from airflow.providers.amazon.aws.operators.opensearch_serverless import (
@@ -40,6 +41,31 @@ DAG_ID = "example_opensearch_serverless"
 sys_test_context_task = SystemTestContextBuilder().build()
 
 
+@task
+def create_encryption_policy(collection_name: str, policy_name: str):
+    import boto3
+
+    client = boto3.client("opensearchserverless")
+    client.create_security_policy(
+        name=policy_name,
+        type="encryption",
+        policy=json.dumps(
+            {
+                "Rules": [{"ResourceType": "collection", "Resource": [f"collection/{collection_name}"]}],
+                "AWSOwnedKey": True,
+            }
+        ),
+    )
+
+
+@task(trigger_rule=TriggerRule.ALL_DONE)
+def delete_encryption_policy(policy_name: str):
+    import boto3
+
+    client = boto3.client("opensearchserverless")
+    client.delete_security_policy(name=policy_name, type="encryption")
+
+
 @task(trigger_rule=TriggerRule.ALL_DONE)
 def delete_collection(collection_id: str):
     import boto3
@@ -56,6 +82,7 @@ with DAG(
     test_context = sys_test_context_task()
     env_id = test_context[ENV_ID_KEY]
     collection_name = f"{env_id}-collection"
+    encryption_policy_name = f"{env_id}-enc-policy"
 
     # [START howto_operator_opensearch_serverless_create_collection]
     create_collection = OpenSearchServerlessCreateCollectionOperator(
@@ -75,11 +102,13 @@ with DAG(
     chain(
         # TEST SETUP
         test_context,
+        create_encryption_policy(collection_name, encryption_policy_name),
         # TEST BODY
         create_collection,
         wait_for_collection,
         # TEST TEARDOWN
         delete_collection(create_collection.output),
+        delete_encryption_policy(encryption_policy_name),
     )
 
     from tests_common.test_utils.watcher import watcher
